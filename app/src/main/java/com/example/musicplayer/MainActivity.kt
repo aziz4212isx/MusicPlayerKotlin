@@ -571,32 +571,88 @@ class MainActivity : AppCompatActivity() {
 
     private fun fetchAndPlayYoutubeVideo(url: String) {
         val videoId = extractVideoId(url) ?: return
-        val apiUrl = "https://inv.tux.pizza/api/v1/videos/$videoId"
-        val request = Request.Builder().url(apiUrl).build()
         
-        Toast.makeText(this, "Loading stream...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Loading stream from Piped...", Toast.LENGTH_SHORT).show()
+        fetchStreamFromPiped(videoId, 0)
+    }
+
+    private fun fetchStreamFromPiped(videoId: String, instanceIndex: Int) {
+        if (instanceIndex >= pipedInstances.size) {
+            runOnUiThread { 
+                logError("Piped Stream", "All instances failed for video $videoId")
+                Toast.makeText(this, "Failed to load stream from all servers", Toast.LENGTH_SHORT).show() 
+            }
+            return
+        }
+
+        val instance = pipedInstances[instanceIndex]
+        val apiUrl = "$instance/streams/$videoId"
+        
+        logError("Piped Stream", "Trying $instance for video $videoId")
+        
+        val request = Request.Builder()
+            .url(apiUrl)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .build()
 
         client.newCall(request).enqueue(object : Callback {
-             override fun onFailure(call: Call, e: IOException) {
-                 runOnUiThread { Toast.makeText(this@MainActivity, "Failed to load stream", Toast.LENGTH_SHORT).show() }
-             }
-             
-             override fun onResponse(call: Call, response: Response) {
-                 response.body?.string()?.let { json ->
-                     try {
-                         val data = gson.fromJson(json, JsonObject::class.java)
-                         val formatStreams = data.getAsJsonArray("formatStreams")
-                         if (formatStreams.size() > 0) {
-                             val streamUrl = formatStreams.get(0).asJsonObject.get("url").asString
-                             runOnUiThread { playMedia(streamUrl) }
-                         } else {
-                             runOnUiThread { Toast.makeText(this@MainActivity, "No stream found", Toast.LENGTH_SHORT).show() }
-                         }
-                     } catch (e: Exception) {
-                         runOnUiThread { Toast.makeText(this@MainActivity, "Error parsing stream info", Toast.LENGTH_SHORT).show() }
-                     }
-                 }
-             }
+            override fun onFailure(call: Call, e: IOException) {
+                logError("Piped Stream Error", "$instance failed: ${e.message}")
+                fetchStreamFromPiped(videoId, instanceIndex + 1)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                try {
+                    val responseBody = response.body?.string() ?: ""
+                    if (!response.isSuccessful) {
+                        logError("Piped Stream HTTP Error", "$instance returned ${response.code}: $responseBody")
+                        fetchStreamFromPiped(videoId, instanceIndex + 1)
+                        return
+                    }
+
+                    if (responseBody.trim().startsWith("<")) {
+                         logError("Piped Stream HTML Error", "$instance returned HTML instead of JSON")
+                         fetchStreamFromPiped(videoId, instanceIndex + 1)
+                         return
+                    }
+
+                    val data = gson.fromJson(responseBody, JsonObject::class.java)
+                    
+                    // Try to find audio streams
+                    var streamUrl = ""
+                    if (data.has("audioStreams") && data.getAsJsonArray("audioStreams").size() > 0) {
+                        val audioStreams = data.getAsJsonArray("audioStreams")
+                        // Prefer m4a/mp4 over webm for better compatibility
+                        for (i in 0 until audioStreams.size()) {
+                            val s = audioStreams.get(i).asJsonObject
+                            if (s.get("mimeType").asString.contains("mp4")) {
+                                streamUrl = s.get("url").asString
+                                break
+                            }
+                        }
+                        // If no mp4 found, take the first one
+                        if (streamUrl.isEmpty()) {
+                            streamUrl = audioStreams.get(0).asJsonObject.get("url").asString
+                        }
+                    } else if (data.has("hls")) {
+                         streamUrl = data.get("hls").asString
+                    } else if (data.has("dash")) {
+                         streamUrl = data.get("dash").asString
+                    }
+
+                    if (streamUrl.isNotEmpty()) {
+                        logError("Piped Stream Success", "Found stream at $instance")
+                        runOnUiThread { playMedia(streamUrl) }
+                    } else {
+                        logError("Piped Stream Missing", "$instance JSON OK but no audioStreams/hls/dash")
+                        fetchStreamFromPiped(videoId, instanceIndex + 1)
+                    }
+
+                } catch (e: Exception) {
+                    logError("Piped Stream Parse Error", "$instance: ${e.message}")
+                    fetchStreamFromPiped(videoId, instanceIndex + 1)
+                }
+            }
         })
     }
 
