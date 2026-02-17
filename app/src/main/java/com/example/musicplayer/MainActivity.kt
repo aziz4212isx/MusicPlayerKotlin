@@ -99,11 +99,18 @@ class MainActivity : AppCompatActivity() {
     // Fallback Invidious Instances (Updated List)
     private val invidiousInstances = listOf(
         "https://inv.nadeko.net",
-        "https://invidious.projectsegfau.lt",
-        "https://invidious.nerdvpn.de",
         "https://yewtu.be",
+        "https://invidious.nerdvpn.de",
+        "https://invidious.drgns.space",
+        "https://invidious.lunar.icu",
+        "https://vid.puffyan.us",
         "https://iv.ggtyler.dev",
-        "https://vid.puffyan.us"
+        "https://invidious.fdn.fr"
+    )
+
+    private val cobaltInstances = listOf(
+        "https://cblt.fariz.dev",
+        "https://api.cobalt.tools"
     )
     private var currentInstanceIndex = 0
 
@@ -657,8 +664,8 @@ class MainActivity : AppCompatActivity() {
     private fun fetchStreamFromPiped(videoId: String, instanceIndex: Int) {
         if (instanceIndex >= pipedInstances.size) {
             runOnUiThread { 
-                logError("Piped Stream", "All instances failed for video $videoId")
-                Toast.makeText(this, "All servers failed. Try adding a Custom Instance in Settings.", Toast.LENGTH_LONG).show() 
+                logError("PIPED_STREAM_FAIL", "All Piped instances failed for video $videoId. Trying Invidious...")
+                fetchStreamFromInvidious(videoId, 0)
             }
             return
         }
@@ -729,6 +736,90 @@ class MainActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     logError("Piped Stream Parse Error", "$instance: ${e.message}")
                     fetchStreamFromPiped(videoId, instanceIndex + 1)
+                }
+            }
+        })
+    }
+
+    private fun fetchStreamFromInvidious(videoId: String, instanceIndex: Int) {
+        if (instanceIndex >= invidiousInstances.size) {
+            runOnUiThread {
+                logError("INVIDIOUS_STREAM_FAIL", "All Invidious instances failed for video $videoId. Trying Cobalt...")
+                fetchStreamFromCobalt(videoId, 0)
+            }
+            return
+        }
+
+        val instance = invidiousInstances[instanceIndex]
+        val apiUrl = "$instance/api/v1/videos/$videoId"
+
+        logError("Invidious Stream", "Trying $instance for video $videoId")
+
+        val request = Request.Builder()
+            .url(apiUrl)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                logError("Invidious Stream Error", "$instance failed: ${e.message}")
+                fetchStreamFromInvidious(videoId, instanceIndex + 1)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                try {
+                    val responseBody = response.body?.string() ?: ""
+                    if (!response.isSuccessful) {
+                        logError("Invidious Stream HTTP Error", "$instance returned ${response.code}")
+                        fetchStreamFromInvidious(videoId, instanceIndex + 1)
+                        return
+                    }
+
+                    val data = gson.fromJson(responseBody, JsonObject::class.java)
+                    var streamUrl = ""
+
+                    // Try adaptiveFormats (usually audio-only is here)
+                    if (data.has("adaptiveFormats")) {
+                        val formats = data.getAsJsonArray("adaptiveFormats")
+                        for (i in 0 until formats.size()) {
+                            val fmt = formats.get(i).asJsonObject
+                            val type = if (fmt.has("type")) fmt.get("type").asString else ""
+                            if (type.contains("audio/mp4")) {
+                                streamUrl = fmt.get("url").asString
+                                break
+                            }
+                        }
+                    }
+
+                    // Fallback to formatStreams (video+audio)
+                    if (streamUrl.isEmpty() && data.has("formatStreams")) {
+                        val formats = data.getAsJsonArray("formatStreams")
+                        for (i in 0 until formats.size()) {
+                            val fmt = formats.get(i).asJsonObject
+                            // Prefer mp4
+                            val type = if (fmt.has("type")) fmt.get("type").asString else ""
+                            if (type.contains("mp4")) {
+                                streamUrl = fmt.get("url").asString
+                                break
+                            }
+                        }
+                        // If still empty, take first
+                        if (streamUrl.isEmpty() && formats.size() > 0) {
+                            streamUrl = formats.get(0).asJsonObject.get("url").asString
+                        }
+                    }
+
+                    if (streamUrl.isNotEmpty()) {
+                        logError("Invidious Stream Success", "Found stream at $instance")
+                        runOnUiThread { playMedia(streamUrl) }
+                    } else {
+                        logError("Invidious Stream Missing", "No suitable streams found at $instance")
+                        fetchStreamFromInvidious(videoId, instanceIndex + 1)
+                    }
+
+                } catch (e: Exception) {
+                    logError("Invidious Stream Parse Error", "$instance: ${e.message}")
+                    fetchStreamFromInvidious(videoId, instanceIndex + 1)
                 }
             }
         })
