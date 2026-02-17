@@ -142,6 +142,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Helper to Check Network Availability
+    private fun isNetworkAvailable(): Boolean {
+        val connectivityManager = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val network = connectivityManager.activeNetwork ?: return false
+            val activeNetwork = connectivityManager.getNetworkCapabilities(network) ?: return false
+            return when {
+                activeNetwork.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> true
+                activeNetwork.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> true
+                activeNetwork.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> true
+                else -> false
+            }
+        } else {
+            val networkInfo = connectivityManager.activeNetworkInfo
+            return networkInfo != null && networkInfo.isConnected
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -217,6 +235,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fetchPlaylistInfo(url: String) {
+        if (!isNetworkAvailable()) {
+             logError("ERROR", "No Internet Connection detected.")
+             Toast.makeText(this, "No Internet Connection", Toast.LENGTH_LONG).show()
+             return
+        }
+
         val playlistId = extractPlaylistId(url)
         if (playlistId != null) {
             logError("START", "Fetching playlist: $playlistId")
@@ -436,6 +460,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun fetchYoutubeInfo(url: String) {
+        if (!isNetworkAvailable()) {
+             logError("ERROR", "No Internet Connection detected.")
+             Toast.makeText(this, "No Internet Connection", Toast.LENGTH_LONG).show()
+             return
+        }
+
         val videoId = extractVideoId(url)
         if (videoId != null) {
             logError("START", "Fetching video: $videoId")
