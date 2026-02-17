@@ -78,17 +78,34 @@ class MainActivity : AppCompatActivity() {
     private val playlist = mutableListOf<Track>()
     private lateinit var adapter: PlaylistAdapter
     private var currentTrackIndex = -1
-    private val client = OkHttpClient()
-    private val gson = Gson()
-    
-    // Fallback Invidious Instances
+    // Fallback Invidious Instances (Updated List)
     private val invidiousInstances = listOf(
-        "https://inv.nadeko.net",
-        "https://vid.puffyan.us",
+        "https://inv.tux.pizza",
         "https://invidious.jing.rocks",
-        "https://inv.tux.pizza"
+        "https://vid.puffyan.us",
+        "https://inv.nadeko.net",
+        "https://invidious.nerdvpn.de",
+        "https://invidious.lunar.icu",
+        "https://yewtu.be",
+        "https://invidious.drgns.space",
+        "https://invidious.projectsegfau.lt",
+        "https://invidious.slipfox.xyz"
     )
     private var currentInstanceIndex = 0
+
+    // Custom Client with User-Agent
+    private val client = OkHttpClient.Builder()
+        .addInterceptor { chain ->
+            val original = chain.request()
+            val request = original.newBuilder()
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .method(original.method, original.body)
+                .build()
+            chain.proceed(request)
+        }
+        .build()
+
+    private val gson = Gson()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
