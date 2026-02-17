@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var urlInput: EditText
     private lateinit var btnSearch: ImageButton
     private lateinit var btnLog: ImageButton
+    private lateinit var btnSettings: ImageButton
     private lateinit var playlistView: RecyclerView
     private lateinit var backgroundImage: ImageView
     private lateinit var progressBar: SeekBar
@@ -86,7 +87,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adapter: PlaylistAdapter
     private var currentTrackIndex = -1
     // Fallback Piped Instances (More reliable for Mixes)
-    private val pipedInstances = listOf(
+    private val pipedInstances = mutableListOf(
         "https://api.piped.private.coffee",
         "https://pipedapi-libre.kavin.rocks",
         "https://pipedapi.kavin.rocks",
@@ -173,6 +174,7 @@ class MainActivity : AppCompatActivity() {
         urlInput = findViewById(R.id.urlInput)
         btnSearch = findViewById(R.id.btnSearch)
         btnLog = findViewById(R.id.btnLog)
+        btnSettings = findViewById(R.id.btnSettings)
         playlistView = findViewById(R.id.playlistRecyclerView)
         backgroundImage = findViewById(R.id.backgroundImage)
         progressBar = findViewById(R.id.progressBar)
@@ -186,11 +188,63 @@ class MainActivity : AppCompatActivity() {
         // Setup Listeners
         btnSearch.setOnClickListener { processInput(urlInput.text.toString()) }
         btnLog.setOnClickListener { showErrorLog() }
+        btnSettings.setOnClickListener { showSettingsDialog() }
         playPauseButton.setOnClickListener { togglePlayPause() }
         btnNext.setOnClickListener { playNext() }
         btnPrev.setOnClickListener { playPrev() }
 
+        loadCustomInstance()
         initializePlayer()
+    }
+
+    private fun loadCustomInstance() {
+        val prefs = getSharedPreferences("MusicPlayerPrefs", MODE_PRIVATE)
+        val customUrl = prefs.getString("custom_piped_url", null)
+        if (!customUrl.isNullOrEmpty()) {
+            if (pipedInstances.contains(customUrl)) {
+                pipedInstances.remove(customUrl)
+            }
+            pipedInstances.add(0, customUrl)
+            logError("CONFIG", "Loaded custom Piped instance: $customUrl")
+        }
+    }
+
+    private fun showSettingsDialog() {
+        val prefs = getSharedPreferences("MusicPlayerPrefs", MODE_PRIVATE)
+        val currentCustom = prefs.getString("custom_piped_url", "")
+
+        val input = EditText(this)
+        input.hint = "https://api.piped.private.coffee"
+        input.setText(currentCustom)
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Custom Piped Instance URL")
+            .setMessage("Enter a working Piped API URL (e.g. https://pipedapi.kavin.rocks). This will be used as the primary server.")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val newUrl = input.text.toString().trim().removeSuffix("/")
+                if (newUrl.isNotEmpty() && Patterns.WEB_URL.matcher(newUrl).matches()) {
+                    prefs.edit().putString("custom_piped_url", newUrl).apply()
+                    loadCustomInstance()
+                    Toast.makeText(this, "Custom instance saved and set as primary.", Toast.LENGTH_SHORT).show()
+                } else if (newUrl.isEmpty()) {
+                    prefs.edit().remove("custom_piped_url").apply()
+                    // Reload default list
+                     pipedInstances.clear()
+                     pipedInstances.addAll(listOf(
+                        "https://api.piped.private.coffee",
+                        "https://pipedapi-libre.kavin.rocks",
+                        "https://pipedapi.kavin.rocks",
+                        "https://pipedapi.leptons.xyz",
+                        "https://pipedapi.nosebs.ru"
+                    ))
+                    Toast.makeText(this, "Custom instance removed.", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Invalid URL", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun logError(tag: String, message: String) {
@@ -487,46 +541,70 @@ class MainActivity : AppCompatActivity() {
 
         val videoId = extractVideoId(url)
         if (videoId != null) {
-            logError("START", "Fetching video: $videoId")
-            // Use the current instance or default to the first one
-            val instance = invidiousInstances[currentInstanceIndex]
-            val apiUrl = "$instance/api/v1/videos/$videoId"
-            
-            val request = Request.Builder()
-                .url(apiUrl)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .build()
-            
-            client.newCall(request).enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) {
-                    runOnUiThread { Toast.makeText(this@MainActivity, "Failed: ${e.message}", Toast.LENGTH_SHORT).show() }
-                }
-
-                override fun onResponse(call: Call, response: Response) {
-                    response.body?.string()?.let { json ->
-                        try {
-                            val data = gson.fromJson(json, JsonObject::class.java)
-                            val title = data.get("title").asString
-                            val author = data.get("author").asString
-                            val formatStreams = data.getAsJsonArray("formatStreams")
-                            var streamUrl = ""
-                            if (formatStreams.size() > 0) {
-                                streamUrl = formatStreams.get(0).asJsonObject.get("url").asString
-                            }
-                            val thumb = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
-                            
-                            runOnUiThread {
-                                addTrack(Track(title, author, streamUrl, thumb))
-                            }
-                        } catch (e: Exception) {
-                            runOnUiThread { Toast.makeText(this@MainActivity, "Error parsing video info", Toast.LENGTH_SHORT).show() }
-                        }
-                    }
-                }
-            })
+            logError("START", "Fetching video info: $videoId")
+            Toast.makeText(this, "Fetching video info...", Toast.LENGTH_SHORT).show()
+            fetchVideoInfoFromPiped(videoId, 0)
         } else {
+             logError("ERROR", "Invalid YouTube URL: $url")
              Toast.makeText(this, "Invalid YouTube URL", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun fetchVideoInfoFromPiped(videoId: String, instanceIndex: Int) {
+        if (instanceIndex >= pipedInstances.size) {
+            runOnUiThread {
+                logError("PIPED_INFO_FAIL", "All instances failed for video info $videoId")
+                Toast.makeText(this, "Failed to fetch video info. Try Custom Instance.", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+
+        val instance = pipedInstances[instanceIndex]
+        val apiUrl = "$instance/streams/$videoId"
+        
+        val request = Request.Builder()
+            .url(apiUrl)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                logError("Piped Info Error", "$instance failed: ${e.message}")
+                fetchVideoInfoFromPiped(videoId, instanceIndex + 1)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                try {
+                    val responseBody = response.body?.string() ?: ""
+                    if (!response.isSuccessful) {
+                        logError("Piped Info HTTP Error", "$instance returned ${response.code}: $responseBody")
+                        fetchVideoInfoFromPiped(videoId, instanceIndex + 1)
+                        return
+                    }
+
+                    if (responseBody.trim().startsWith("<")) {
+                         logError("Piped Info HTML Error", "$instance returned HTML")
+                         fetchVideoInfoFromPiped(videoId, instanceIndex + 1)
+                         return
+                    }
+
+                    val data = gson.fromJson(responseBody, JsonObject::class.java)
+                    val title = data.get("title").asString
+                    val author = if (data.has("uploader")) data.get("uploader").asString else "Unknown"
+                    val thumb = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                    val watchUrl = "https://www.youtube.com/watch?v=$videoId"
+
+                    runOnUiThread {
+                        addTrack(Track(title, author, watchUrl, thumb))
+                        logError("PIPED_INFO_SUCCESS", "Added $title from $instance")
+                    }
+
+                } catch (e: Exception) {
+                    logError("Piped Info Parse Error", "$instance: ${e.message}")
+                    fetchVideoInfoFromPiped(videoId, instanceIndex + 1)
+                }
+            }
+        })
     }
     
     private fun extractVideoId(url: String): String? {
@@ -580,7 +658,7 @@ class MainActivity : AppCompatActivity() {
         if (instanceIndex >= pipedInstances.size) {
             runOnUiThread { 
                 logError("Piped Stream", "All instances failed for video $videoId")
-                Toast.makeText(this, "Failed to load stream from all servers", Toast.LENGTH_SHORT).show() 
+                Toast.makeText(this, "All servers failed. Try adding a Custom Instance in Settings.", Toast.LENGTH_LONG).show() 
             }
             return
         }
