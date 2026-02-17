@@ -83,6 +83,15 @@ class MainActivity : AppCompatActivity() {
     private val playlist = mutableListOf<Track>()
     private lateinit var adapter: PlaylistAdapter
     private var currentTrackIndex = -1
+    // Fallback Piped Instances (More reliable for Mixes)
+    private val pipedInstances = listOf(
+        "https://api.piped.projectsegfau.lt",
+        "https://pipedapi.tokhmi.xyz",
+        "https://pipedapi.kavin.rocks",
+        "https://api.piped.privacy.com.de"
+    )
+    private var currentPipedIndex = 0
+
     // Fallback Invidious Instances (Updated List)
     private val invidiousInstances = listOf(
         "https://inv.nadeko.net",
@@ -185,112 +194,204 @@ class MainActivity : AppCompatActivity() {
     private fun fetchPlaylistInfo(url: String) {
         val playlistId = extractPlaylistId(url)
         if (playlistId != null) {
-            val instance = invidiousInstances[currentInstanceIndex]
-            val apiUrl = "$instance/api/v1/playlists/$playlistId"
-            
-            val request = Request.Builder()
-                .url(apiUrl)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .build()
-            
-            runOnUiThread { 
-                loadingIndicator.visibility = View.VISIBLE 
-                // Only show toast for the first attempt or if explicitly needed, to avoid spam
-                if (currentInstanceIndex == 0) {
-                    Toast.makeText(this, "Fetching Playlist...", Toast.LENGTH_SHORT).show()
-                }
-            }
-
-            client.newCall(request).enqueue(object : Callback {
-                private fun retryOrShowError(errorMsg: String) {
-                    runOnUiThread { 
-                        // Try next instance if available
-                        if (currentInstanceIndex < invidiousInstances.size - 1) {
-                            currentInstanceIndex++
-                            // Log.d("MusicPlayer", "Retrying with new server: ${invidiousInstances[currentInstanceIndex]}")
-                            fetchPlaylistInfo(url)
-                        } else {
-                            loadingIndicator.visibility = View.GONE
-                            currentInstanceIndex = 0 // Reset
-                            val finalError = if (errorMsg.length > 50) errorMsg.substring(0, 50) + "..." else errorMsg
-                            Toast.makeText(this@MainActivity, "Failed: $finalError", Toast.LENGTH_LONG).show() 
-                        }
-                    }
-                }
-
-                override fun onFailure(call: Call, e: IOException) {
-                    retryOrShowError("Network: ${e.message}")
-                }
-
-                override fun onResponse(call: Call, response: Response) {
-                    if (!response.isSuccessful) {
-                        retryOrShowError("HTTP ${response.code}")
-                        return
-                    }
-
-                    val responseBody = response.body?.string()
-                    if (responseBody == null) {
-                        retryOrShowError("Empty Response")
-                        return
-                    }
-
-                    try {
-                        val data = gson.fromJson(responseBody, JsonObject::class.java)
-                        
-                        // Check if it's a valid playlist object
-                        if (data.has("videos")) {
-                            val videos = data.getAsJsonArray("videos")
-                            val newTracks = mutableListOf<Track>()
-                            
-                            videos.forEach { videoElement ->
-                                try {
-                                    val video = videoElement.asJsonObject
-                                    val title = video.get("title").asString
-                                    val author = video.get("author").asString
-                                    val videoId = video.get("videoId").asString
-                                    val thumb = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
-                                    val watchUrl = "https://www.youtube.com/watch?v=$videoId"
-                                    
-                                    newTracks.add(Track(title, author, watchUrl, thumb))
-                                } catch (e: Exception) {
-                                    // Ignore individual failures
-                                }
-                            }
-
-                            runOnUiThread {
-                                loadingIndicator.visibility = View.GONE
-                                if (newTracks.isEmpty()) {
-                                    Toast.makeText(this@MainActivity, "Playlist is empty", Toast.LENGTH_SHORT).show()
-                                    return@runOnUiThread
-                                }
-                                
-                                val startPos = playlist.size
-                                playlist.addAll(newTracks)
-                                adapter.notifyItemRangeInserted(startPos, newTracks.size)
-                                
-                                if (currentTrackIndex == -1) {
-                                    playTrack(0)
-                                }
-                                Toast.makeText(this@MainActivity, "Added ${newTracks.size} tracks from $instance", Toast.LENGTH_SHORT).show()
-                            }
-                        } else if (data.has("error")) {
-                            retryOrShowError("API Error: ${data.get("error").asString}")
-                        } else {
-                            retryOrShowError("Invalid JSON Structure")
-                        }
-                    } catch (e: Exception) {
-                        // Check if response might be HTML (e.g. Cloudflare or error page)
-                        if (responseBody.trim().startsWith("<")) {
-                            retryOrShowError("Server returned HTML (Blocked/Error)")
-                        } else {
-                            retryOrShowError("JSON Parse Error")
-                        }
-                    }
-                }
-            })
+            // Priority: Try Piped API first (better support for Mixes/RD playlists)
+            fetchPlaylistFromPiped(playlistId, url)
         } else {
              Toast.makeText(this, "Invalid Playlist URL", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun fetchPlaylistFromPiped(playlistId: String, originalUrl: String) {
+        val instance = pipedInstances[currentPipedIndex]
+        val apiUrl = "$instance/playlists/$playlistId"
+        
+        val request = Request.Builder()
+            .url(apiUrl)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .build()
+        
+        runOnUiThread { 
+            loadingIndicator.visibility = View.VISIBLE 
+            if (currentPipedIndex == 0) {
+                Toast.makeText(this, "Fetching via Piped...", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        client.newCall(request).enqueue(object : Callback {
+             private fun retryPipedOrFallback(errorMsg: String) {
+                runOnUiThread {
+                    if (currentPipedIndex < pipedInstances.size - 1) {
+                        currentPipedIndex++
+                        fetchPlaylistFromPiped(playlistId, originalUrl)
+                    } else {
+                        // All Piped instances failed, fallback to Invidious
+                        currentPipedIndex = 0 // Reset
+                        fetchPlaylistFromInvidious(playlistId, originalUrl)
+                    }
+                }
+            }
+
+            override fun onFailure(call: Call, e: IOException) {
+                retryPipedOrFallback("Network: ${e.message}")
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                if (!response.isSuccessful) {
+                    retryPipedOrFallback("HTTP ${response.code}")
+                    return
+                }
+
+                val responseBody = response.body?.string()
+                if (responseBody == null) {
+                    retryPipedOrFallback("Empty Response")
+                    return
+                }
+
+                try {
+                    val data = gson.fromJson(responseBody, JsonObject::class.java)
+                    if (data.has("relatedStreams")) {
+                        val videos = data.getAsJsonArray("relatedStreams")
+                        val newTracks = mutableListOf<Track>()
+                        
+                        videos.forEach { videoElement ->
+                            try {
+                                val video = videoElement.asJsonObject
+                                val title = video.get("title").asString
+                                val author = video.get("uploaderName").asString // Piped uses uploaderName
+                                // Piped provides relative URLs like /watch?v=...
+                                val videoUrl = video.get("url").asString
+                                val videoId = videoUrl.replace("/watch?v=", "")
+                                val thumb = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                                val watchUrl = "https://www.youtube.com/watch?v=$videoId"
+                                
+                                newTracks.add(Track(title, author, watchUrl, thumb))
+                            } catch (e: Exception) {
+                                // Ignore individual failures
+                            }
+                        }
+
+                        runOnUiThread {
+                            loadingIndicator.visibility = View.GONE
+                            if (newTracks.isEmpty()) {
+                                retryPipedOrFallback("Empty Piped Playlist")
+                                return@runOnUiThread
+                            }
+                            
+                            val startPos = playlist.size
+                            playlist.addAll(newTracks)
+                            adapter.notifyItemRangeInserted(startPos, newTracks.size)
+                            
+                            if (currentTrackIndex == -1) {
+                                playTrack(0)
+                            }
+                            Toast.makeText(this@MainActivity, "Added ${newTracks.size} tracks from Piped", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        retryPipedOrFallback("Invalid Piped JSON")
+                    }
+                } catch (e: Exception) {
+                    retryPipedOrFallback("Piped Parse Error")
+                }
+            }
+        })
+    }
+
+    private fun fetchPlaylistFromInvidious(playlistId: String, originalUrl: String) {
+        val instance = invidiousInstances[currentInstanceIndex]
+        val apiUrl = "$instance/api/v1/playlists/$playlistId"
+        
+        val request = Request.Builder()
+            .url(apiUrl)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .build()
+        
+        runOnUiThread { 
+            // Toast.makeText(this, "Falling back to Invidious...", Toast.LENGTH_SHORT).show()
+        }
+
+        client.newCall(request).enqueue(object : Callback {
+            private fun retryOrShowError(errorMsg: String) {
+                runOnUiThread { 
+                    if (currentInstanceIndex < invidiousInstances.size - 1) {
+                        currentInstanceIndex++
+                        fetchPlaylistFromInvidious(playlistId, originalUrl)
+                    } else {
+                        loadingIndicator.visibility = View.GONE
+                        currentInstanceIndex = 0 // Reset
+                        val finalError = if (errorMsg.length > 50) errorMsg.substring(0, 50) + "..." else errorMsg
+                        Toast.makeText(this@MainActivity, "Failed: $finalError", Toast.LENGTH_LONG).show() 
+                    }
+                }
+            }
+
+            override fun onFailure(call: Call, e: IOException) {
+                retryOrShowError("Network: ${e.message}")
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                if (!response.isSuccessful) {
+                    retryOrShowError("HTTP ${response.code}")
+                    return
+                }
+
+                val responseBody = response.body?.string()
+                if (responseBody == null) {
+                    retryOrShowError("Empty Response")
+                    return
+                }
+
+                try {
+                    val data = gson.fromJson(responseBody, JsonObject::class.java)
+                    
+                    if (data.has("videos")) {
+                        val videos = data.getAsJsonArray("videos")
+                        val newTracks = mutableListOf<Track>()
+                        
+                        videos.forEach { videoElement ->
+                            try {
+                                val video = videoElement.asJsonObject
+                                val title = video.get("title").asString
+                                val author = video.get("author").asString
+                                val videoId = video.get("videoId").asString
+                                val thumb = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                                val watchUrl = "https://www.youtube.com/watch?v=$videoId"
+                                
+                                newTracks.add(Track(title, author, watchUrl, thumb))
+                            } catch (e: Exception) {
+                                // Ignore
+                            }
+                        }
+
+                        runOnUiThread {
+                            loadingIndicator.visibility = View.GONE
+                            if (newTracks.isEmpty()) {
+                                Toast.makeText(this@MainActivity, "Playlist is empty", Toast.LENGTH_SHORT).show()
+                                return@runOnUiThread
+                            }
+                            
+                            val startPos = playlist.size
+                            playlist.addAll(newTracks)
+                            adapter.notifyItemRangeInserted(startPos, newTracks.size)
+                            
+                            if (currentTrackIndex == -1) {
+                                playTrack(0)
+                            }
+                            Toast.makeText(this@MainActivity, "Added ${newTracks.size} tracks from Invidious", Toast.LENGTH_SHORT).show()
+                        }
+                    } else if (data.has("error")) {
+                        retryOrShowError("API Error: ${data.get("error").asString}")
+                    } else {
+                        retryOrShowError("Invalid JSON Structure")
+                    }
+                } catch (e: Exception) {
+                    if (responseBody.trim().startsWith("<")) {
+                        retryOrShowError("Server returned HTML (Blocked/Error)")
+                    } else {
+                        retryOrShowError("JSON Parse Error")
+                    }
+                }
+            }
+        })
     }
 
     private fun fetchYoutubeInfo(url: String) {
