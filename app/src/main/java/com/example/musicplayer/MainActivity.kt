@@ -20,6 +20,11 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonArray
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 import okhttp3.*
 import java.io.IOException
 
@@ -80,29 +85,52 @@ class MainActivity : AppCompatActivity() {
     private var currentTrackIndex = -1
     // Fallback Invidious Instances (Updated List)
     private val invidiousInstances = listOf(
+        "https://inv.nadeko.net",
         "https://invidious.projectsegfau.lt",
         "https://invidious.nerdvpn.de",
         "https://yewtu.be",
-        "https://inv.nadeko.net",
         "https://iv.ggtyler.dev",
         "https://vid.puffyan.us",
         "https://inv.tux.pizza"
     )
     private var currentInstanceIndex = 0
 
-    // Custom Client with User-Agent
-    private val client = OkHttpClient.Builder()
-        .addInterceptor { chain ->
-            val original = chain.request()
-            val request = original.newBuilder()
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .method(original.method, original.body)
-                .build()
-            chain.proceed(request)
-        }
-        .build()
+    // Custom Client with User-Agent and Unsafe SSL
+    private val client = getUnsafeOkHttpClient()
 
     private val gson = Gson()
+
+    // Helper to Create Unsafe OkHttpClient (Trusts All Certificates)
+    private fun getUnsafeOkHttpClient(): OkHttpClient {
+        try {
+            // Create a trust manager that does not validate certificate chains
+            val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+            })
+
+            // Install the all-trusting trust manager
+            val sslContext = SSLContext.getInstance("SSL")
+            sslContext.init(null, trustAllCerts, SecureRandom())
+            val sslSocketFactory = sslContext.socketFactory
+
+            return OkHttpClient.Builder()
+                .sslSocketFactory(sslSocketFactory, trustAllCerts[0] as X509TrustManager)
+                .hostnameVerifier { _, _ -> true } // Trust all hostnames
+                .addInterceptor { chain ->
+                    val original = chain.request()
+                    val request = original.newBuilder()
+                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                        .method(original.method, original.body)
+                        .build()
+                    chain.proceed(request)
+                }
+                .build()
+        } catch (e: Exception) {
+            throw RuntimeException(e)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -157,85 +185,107 @@ class MainActivity : AppCompatActivity() {
     private fun fetchPlaylistInfo(url: String) {
         val playlistId = extractPlaylistId(url)
         if (playlistId != null) {
-            val apiUrl = "${invidiousInstances[currentInstanceIndex]}/api/v1/playlists/$playlistId"
-            val request = Request.Builder().url(apiUrl).build()
+            val instance = invidiousInstances[currentInstanceIndex]
+            val apiUrl = "$instance/api/v1/playlists/$playlistId"
+            
+            val request = Request.Builder()
+                .url(apiUrl)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .build()
             
             runOnUiThread { 
                 loadingIndicator.visibility = View.VISIBLE 
-                Toast.makeText(this, "Fetching Playlist from ${invidiousInstances[currentInstanceIndex]}...", Toast.LENGTH_SHORT).show()
+                // Only show toast for the first attempt or if explicitly needed, to avoid spam
+                if (currentInstanceIndex == 0) {
+                    Toast.makeText(this, "Fetching Playlist...", Toast.LENGTH_SHORT).show()
+                }
             }
 
             client.newCall(request).enqueue(object : Callback {
-                private fun retryOrShowError() {
+                private fun retryOrShowError(errorMsg: String) {
                     runOnUiThread { 
-                        loadingIndicator.visibility = View.GONE
                         // Try next instance if available
                         if (currentInstanceIndex < invidiousInstances.size - 1) {
                             currentInstanceIndex++
-                            Toast.makeText(this@MainActivity, "Retrying with new server...", Toast.LENGTH_SHORT).show()
+                            // Log.d("MusicPlayer", "Retrying with new server: ${invidiousInstances[currentInstanceIndex]}")
                             fetchPlaylistInfo(url)
                         } else {
+                            loadingIndicator.visibility = View.GONE
                             currentInstanceIndex = 0 // Reset
-                            Toast.makeText(this@MainActivity, "Failed to fetch playlist from all servers", Toast.LENGTH_SHORT).show() 
+                            val finalError = if (errorMsg.length > 50) errorMsg.substring(0, 50) + "..." else errorMsg
+                            Toast.makeText(this@MainActivity, "Failed: $finalError", Toast.LENGTH_LONG).show() 
                         }
                     }
                 }
 
                 override fun onFailure(call: Call, e: IOException) {
-                    retryOrShowError()
+                    retryOrShowError("Network: ${e.message}")
                 }
 
                 override fun onResponse(call: Call, response: Response) {
                     if (!response.isSuccessful) {
-                        retryOrShowError()
+                        retryOrShowError("HTTP ${response.code}")
                         return
                     }
 
-                    response.body?.string()?.let { json ->
-                        try {
-                            val data = gson.fromJson(json, JsonObject::class.java)
-                            if (data.has("videos")) {
-                                val videos = data.getAsJsonArray("videos")
-                                val newTracks = mutableListOf<Track>()
-                                
-                                videos.forEach { videoElement ->
-                                    try {
-                                        val video = videoElement.asJsonObject
-                                        val title = video.get("title").asString
-                                        val author = video.get("author").asString
-                                        val videoId = video.get("videoId").asString
-                                        val thumb = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
-                                        val watchUrl = "https://www.youtube.com/watch?v=$videoId"
-                                        
-                                        newTracks.add(Track(title, author, watchUrl, thumb))
-                                    } catch (e: Exception) {
-                                        // Ignore individual failures
-                                    }
-                                }
+                    val responseBody = response.body?.string()
+                    if (responseBody == null) {
+                        retryOrShowError("Empty Response")
+                        return
+                    }
 
-                                runOnUiThread {
-                                    loadingIndicator.visibility = View.GONE
-                                    if (newTracks.isEmpty()) {
-                                        Toast.makeText(this@MainActivity, "Playlist is empty", Toast.LENGTH_SHORT).show()
-                                        return@runOnUiThread
-                                    }
+                    try {
+                        val data = gson.fromJson(responseBody, JsonObject::class.java)
+                        
+                        // Check if it's a valid playlist object
+                        if (data.has("videos")) {
+                            val videos = data.getAsJsonArray("videos")
+                            val newTracks = mutableListOf<Track>()
+                            
+                            videos.forEach { videoElement ->
+                                try {
+                                    val video = videoElement.asJsonObject
+                                    val title = video.get("title").asString
+                                    val author = video.get("author").asString
+                                    val videoId = video.get("videoId").asString
+                                    val thumb = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                                    val watchUrl = "https://www.youtube.com/watch?v=$videoId"
                                     
-                                    val startPos = playlist.size
-                                    playlist.addAll(newTracks)
-                                    adapter.notifyItemRangeInserted(startPos, newTracks.size)
-                                    
-                                    if (currentTrackIndex == -1) {
-                                        playTrack(0)
-                                    }
-                                    Toast.makeText(this@MainActivity, "Added ${newTracks.size} tracks", Toast.LENGTH_SHORT).show()
+                                    newTracks.add(Track(title, author, watchUrl, thumb))
+                                } catch (e: Exception) {
+                                    // Ignore individual failures
                                 }
-                            } else {
-                                retryOrShowError()
                             }
-                        } catch (e: Exception) {
-                             retryOrShowError()
+
+                            runOnUiThread {
+                                loadingIndicator.visibility = View.GONE
+                                if (newTracks.isEmpty()) {
+                                    Toast.makeText(this@MainActivity, "Playlist is empty", Toast.LENGTH_SHORT).show()
+                                    return@runOnUiThread
+                                }
+                                
+                                val startPos = playlist.size
+                                playlist.addAll(newTracks)
+                                adapter.notifyItemRangeInserted(startPos, newTracks.size)
+                                
+                                if (currentTrackIndex == -1) {
+                                    playTrack(0)
+                                }
+                                Toast.makeText(this@MainActivity, "Added ${newTracks.size} tracks from $instance", Toast.LENGTH_SHORT).show()
+                            }
+                        } else if (data.has("error")) {
+                            retryOrShowError("API Error: ${data.get("error").asString}")
+                        } else {
+                            retryOrShowError("Invalid JSON Structure")
                         }
-                    } ?: retryOrShowError()
+                    } catch (e: Exception) {
+                        // Check if response might be HTML (e.g. Cloudflare or error page)
+                        if (responseBody.trim().startsWith("<")) {
+                            retryOrShowError("Server returned HTML (Blocked/Error)")
+                        } else {
+                            retryOrShowError("JSON Parse Error")
+                        }
+                    }
                 }
             })
         } else {
@@ -246,13 +296,18 @@ class MainActivity : AppCompatActivity() {
     private fun fetchYoutubeInfo(url: String) {
         val videoId = extractVideoId(url)
         if (videoId != null) {
-            // Using a public Invidious instance API
-            val apiUrl = "https://inv.tux.pizza/api/v1/videos/$videoId" 
-            val request = Request.Builder().url(apiUrl).build()
+            // Use the current instance or default to the first one
+            val instance = invidiousInstances[currentInstanceIndex]
+            val apiUrl = "$instance/api/v1/videos/$videoId"
+            
+            val request = Request.Builder()
+                .url(apiUrl)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .build()
             
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    runOnUiThread { Toast.makeText(this@MainActivity, "Failed to fetch info", Toast.LENGTH_SHORT).show() }
+                    runOnUiThread { Toast.makeText(this@MainActivity, "Failed: ${e.message}", Toast.LENGTH_SHORT).show() }
                 }
 
                 override fun onResponse(call: Call, response: Response) {
@@ -272,7 +327,7 @@ class MainActivity : AppCompatActivity() {
                                 addTrack(Track(title, author, streamUrl, thumb))
                             }
                         } catch (e: Exception) {
-                             runOnUiThread { Toast.makeText(this@MainActivity, "Error parsing info", Toast.LENGTH_SHORT).show() }
+                            runOnUiThread { Toast.makeText(this@MainActivity, "Error parsing video info", Toast.LENGTH_SHORT).show() }
                         }
                     }
                 }
