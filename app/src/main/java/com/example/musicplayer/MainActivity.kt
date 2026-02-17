@@ -148,11 +148,11 @@ class MainActivity : AppCompatActivity() {
             
             runOnUiThread { 
                 loadingIndicator.visibility = View.VISIBLE 
-                Toast.makeText(this, "Fetching Playlist...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Fetching Playlist from ${invidiousInstances[currentInstanceIndex]}...", Toast.LENGTH_SHORT).show()
             }
 
             client.newCall(request).enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) {
+                private fun retryOrShowError() {
                     runOnUiThread { 
                         loadingIndicator.visibility = View.GONE
                         // Try next instance if available
@@ -162,12 +162,21 @@ class MainActivity : AppCompatActivity() {
                             fetchPlaylistInfo(url)
                         } else {
                             currentInstanceIndex = 0 // Reset
-                            Toast.makeText(this@MainActivity, "Failed to fetch playlist", Toast.LENGTH_SHORT).show() 
+                            Toast.makeText(this@MainActivity, "Failed to fetch playlist from all servers", Toast.LENGTH_SHORT).show() 
                         }
                     }
                 }
 
+                override fun onFailure(call: Call, e: IOException) {
+                    retryOrShowError()
+                }
+
                 override fun onResponse(call: Call, response: Response) {
+                    if (!response.isSuccessful) {
+                        retryOrShowError()
+                        return
+                    }
+
                     response.body?.string()?.let { json ->
                         try {
                             val data = gson.fromJson(json, JsonObject::class.java)
@@ -207,18 +216,12 @@ class MainActivity : AppCompatActivity() {
                                     Toast.makeText(this@MainActivity, "Added ${newTracks.size} tracks", Toast.LENGTH_SHORT).show()
                                 }
                             } else {
-                                runOnUiThread { 
-                                    loadingIndicator.visibility = View.GONE
-                                    Toast.makeText(this@MainActivity, "Invalid Playlist Data", Toast.LENGTH_SHORT).show() 
-                                }
+                                retryOrShowError()
                             }
                         } catch (e: Exception) {
-                             runOnUiThread { 
-                                 loadingIndicator.visibility = View.GONE
-                                 Toast.makeText(this@MainActivity, "Error parsing playlist", Toast.LENGTH_SHORT).show() 
-                             }
+                             retryOrShowError()
                         }
-                    }
+                    } ?: retryOrShowError()
                 }
             })
         } else {
