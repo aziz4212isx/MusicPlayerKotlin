@@ -80,16 +80,13 @@ class MainActivity : AppCompatActivity() {
     private var currentTrackIndex = -1
     // Fallback Invidious Instances (Updated List)
     private val invidiousInstances = listOf(
-        "https://inv.tux.pizza",
-        "https://invidious.jing.rocks",
-        "https://vid.puffyan.us",
-        "https://inv.nadeko.net",
-        "https://invidious.nerdvpn.de",
-        "https://invidious.lunar.icu",
-        "https://yewtu.be",
-        "https://invidious.drgns.space",
         "https://invidious.projectsegfau.lt",
-        "https://invidious.slipfox.xyz"
+        "https://invidious.nerdvpn.de",
+        "https://yewtu.be",
+        "https://inv.nadeko.net",
+        "https://iv.ggtyler.dev",
+        "https://vid.puffyan.us",
+        "https://inv.tux.pizza"
     )
     private var currentInstanceIndex = 0
 
