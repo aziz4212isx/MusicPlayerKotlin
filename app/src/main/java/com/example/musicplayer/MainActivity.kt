@@ -19,6 +19,7 @@ import coil.load
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.gson.Gson
 import com.google.gson.JsonObject
+import com.google.gson.JsonArray
 import okhttp3.*
 import java.io.IOException
 
@@ -111,12 +112,76 @@ class MainActivity : AppCompatActivity() {
     private fun processInput(input: String) {
         if (input.isEmpty()) return
         
-        if (input.contains("youtube.com") || input.contains("youtu.be")) {
+        if (input.contains("list=")) {
+             fetchPlaylistInfo(input)
+        } else if (input.contains("youtube.com") || input.contains("youtu.be")) {
              fetchYoutubeInfo(input)
         } else {
             addTrack(Track("Unknown Title", "Unknown Artist", input))
         }
         urlInput.text.clear()
+    }
+
+    private fun extractPlaylistId(url: String): String? {
+        val pattern = "(?<=list=)[^#\\&\\?]*"
+        val compiled = java.util.regex.Pattern.compile(pattern)
+        val matcher = compiled.matcher(url)
+        return if (matcher.find()) matcher.group() else null
+    }
+
+    private fun fetchPlaylistInfo(url: String) {
+        val playlistId = extractPlaylistId(url)
+        if (playlistId != null) {
+            val apiUrl = "https://inv.tux.pizza/api/v1/playlists/$playlistId"
+            val request = Request.Builder().url(apiUrl).build()
+            
+            Toast.makeText(this, "Fetching Playlist...", Toast.LENGTH_SHORT).show()
+
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    runOnUiThread { Toast.makeText(this@MainActivity, "Failed to fetch playlist", Toast.LENGTH_SHORT).show() }
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    response.body?.string()?.let { json ->
+                        try {
+                            val data = gson.fromJson(json, JsonObject::class.java)
+                            if (data.has("videos")) {
+                                val videos = data.getAsJsonArray("videos")
+                                runOnUiThread {
+                                    if (videos.size() == 0) {
+                                        Toast.makeText(this@MainActivity, "Playlist is empty", Toast.LENGTH_SHORT).show()
+                                        return@runOnUiThread
+                                    }
+                                    
+                                    videos.forEach { videoElement ->
+                                        try {
+                                            val video = videoElement.asJsonObject
+                                            val title = video.get("title").asString
+                                            val author = video.get("author").asString
+                                            val videoId = video.get("videoId").asString
+                                            val thumb = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                                            val watchUrl = "https://www.youtube.com/watch?v=$videoId"
+                                            
+                                            addTrack(Track(title, author, watchUrl, thumb))
+                                        } catch (e: Exception) {
+                                            // Ignore individual failures
+                                        }
+                                    }
+                                    Toast.makeText(this@MainActivity, "Added ${videos.size()} tracks", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                runOnUiThread { Toast.makeText(this@MainActivity, "Invalid Playlist Data", Toast.LENGTH_SHORT).show() }
+                            }
+                        } catch (e: Exception) {
+                             runOnUiThread { Toast.makeText(this@MainActivity, "Error parsing playlist", Toast.LENGTH_SHORT).show() }
+                        }
+                    }
+                }
+            })
+        } else {
+             Toast.makeText(this, "Invalid Playlist URL", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun fetchYoutubeInfo(url: String) {
@@ -190,7 +255,43 @@ class MainActivity : AppCompatActivity() {
         val track = playlist[index]
         
         backgroundImage.load(track.thumbnailUrl)
-        playMedia(track.url)
+        
+        if (track.url.contains("youtube.com") || track.url.contains("youtu.be")) {
+             fetchAndPlayYoutubeVideo(track.url)
+        } else {
+             playMedia(track.url)
+        }
+    }
+
+    private fun fetchAndPlayYoutubeVideo(url: String) {
+        val videoId = extractVideoId(url) ?: return
+        val apiUrl = "https://inv.tux.pizza/api/v1/videos/$videoId"
+        val request = Request.Builder().url(apiUrl).build()
+        
+        Toast.makeText(this, "Loading stream...", Toast.LENGTH_SHORT).show()
+
+        client.newCall(request).enqueue(object : Callback {
+             override fun onFailure(call: Call, e: IOException) {
+                 runOnUiThread { Toast.makeText(this@MainActivity, "Failed to load stream", Toast.LENGTH_SHORT).show() }
+             }
+             
+             override fun onResponse(call: Call, response: Response) {
+                 response.body?.string()?.let { json ->
+                     try {
+                         val data = gson.fromJson(json, JsonObject::class.java)
+                         val formatStreams = data.getAsJsonArray("formatStreams")
+                         if (formatStreams.size() > 0) {
+                             val streamUrl = formatStreams.get(0).asJsonObject.get("url").asString
+                             runOnUiThread { playMedia(streamUrl) }
+                         } else {
+                             runOnUiThread { Toast.makeText(this@MainActivity, "No stream found", Toast.LENGTH_SHORT).show() }
+                         }
+                     } catch (e: Exception) {
+                         runOnUiThread { Toast.makeText(this@MainActivity, "Error parsing stream info", Toast.LENGTH_SHORT).show() }
+                     }
+                 }
+             }
+        })
     }
 
     private fun playNext() {
