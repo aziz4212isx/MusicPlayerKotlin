@@ -87,8 +87,8 @@ class MainActivity : AppCompatActivity() {
     private val pipedInstances = listOf(
         "https://api.piped.projectsegfau.lt",
         "https://pipedapi.tokhmi.xyz",
-        "https://pipedapi.kavin.rocks",
-        "https://api.piped.privacy.com.de"
+        "https://pipedapi.lunar.icu",
+        "https://pipedapi.kavin.rocks"
     )
     private var currentPipedIndex = 0
 
@@ -99,8 +99,7 @@ class MainActivity : AppCompatActivity() {
         "https://invidious.nerdvpn.de",
         "https://yewtu.be",
         "https://iv.ggtyler.dev",
-        "https://vid.puffyan.us",
-        "https://inv.tux.pizza"
+        "https://vid.puffyan.us"
     )
     private var currentInstanceIndex = 0
 
@@ -213,7 +212,7 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread { 
             loadingIndicator.visibility = View.VISIBLE 
             if (currentPipedIndex == 0) {
-                Toast.makeText(this, "Fetching via Piped...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Fetching Mix via Piped...", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -224,9 +223,16 @@ class MainActivity : AppCompatActivity() {
                         currentPipedIndex++
                         fetchPlaylistFromPiped(playlistId, originalUrl)
                     } else {
-                        // All Piped instances failed, fallback to Invidious
-                        currentPipedIndex = 0 // Reset
-                        fetchPlaylistFromInvidious(playlistId, originalUrl)
+                        // If it's a Mix (RD...), Invidious won't support it anyway.
+                        if (playlistId.startsWith("RD")) {
+                            loadingIndicator.visibility = View.GONE
+                            currentPipedIndex = 0
+                            Toast.makeText(this@MainActivity, "Mix Failed: Servers Busy. Try again later.", Toast.LENGTH_LONG).show()
+                        } else {
+                            // Standard playlist, try Invidious fallback
+                            currentPipedIndex = 0 // Reset
+                            fetchPlaylistFromInvidious(playlistId, originalUrl)
+                        }
                     }
                 }
             }

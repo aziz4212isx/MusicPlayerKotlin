@@ -10,7 +10,15 @@ instances = [
     "https://pipedapi.moomoo.me",
     "https://api.piped.projectsegfau.lt",
     "https://pipedapi.leptons.xyz",
-    "https://api.piped.yt"
+    "https://api.piped.yt",
+    "https://pipedapi.adminforge.de",
+    "https://pipedapi.smnz.de",
+    "https://api.piped.forcadell.xyz",
+    "https://pipedapi.ducks.party",
+    "https://pipedapi.r4fo.com",
+    "https://api.piped.chalvantzis.com",
+    "https://pipedapi.nosebs.ru",
+    "https://api.piped.076.ne.jp"
 ]
 
 playlist_id = "RD9KnngSa6vk4"
