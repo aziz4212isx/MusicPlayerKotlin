@@ -75,12 +75,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnPrev: ImageButton
     private lateinit var urlInput: EditText
     private lateinit var btnSearch: ImageButton
+    private lateinit var btnLog: ImageButton
     private lateinit var playlistView: RecyclerView
     private lateinit var backgroundImage: ImageView
     private lateinit var progressBar: SeekBar
     private lateinit var loadingIndicator: ProgressBar
 
     private val playlist = mutableListOf<Track>()
+    private val logBuffer = StringBuilder()
     private lateinit var adapter: PlaylistAdapter
     private var currentTrackIndex = -1
     // Fallback Piped Instances (More reliable for Mixes)
@@ -151,6 +153,7 @@ class MainActivity : AppCompatActivity() {
         btnPrev = findViewById(R.id.btnPrev)
         urlInput = findViewById(R.id.urlInput)
         btnSearch = findViewById(R.id.btnSearch)
+        btnLog = findViewById(R.id.btnLog)
         playlistView = findViewById(R.id.playlistRecyclerView)
         backgroundImage = findViewById(R.id.backgroundImage)
         progressBar = findViewById(R.id.progressBar)
@@ -163,11 +166,34 @@ class MainActivity : AppCompatActivity() {
 
         // Setup Listeners
         btnSearch.setOnClickListener { processInput(urlInput.text.toString()) }
+        btnLog.setOnClickListener { showErrorLog() }
         playPauseButton.setOnClickListener { togglePlayPause() }
         btnNext.setOnClickListener { playNext() }
         btnPrev.setOnClickListener { playPrev() }
 
         initializePlayer()
+    }
+
+    private fun logError(tag: String, message: String) {
+        val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        val logEntry = "[$timestamp] $tag: $message\n"
+        logBuffer.append(logEntry)
+    }
+
+    private fun showErrorLog() {
+        val scrollView = ScrollView(this)
+        val textView = TextView(this)
+        textView.text = if (logBuffer.isNotEmpty()) logBuffer.toString() else "No logs yet."
+        textView.setPadding(32, 32, 32, 32)
+        textView.setTextIsSelectable(true)
+        scrollView.addView(textView)
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Error Logs")
+            .setView(scrollView)
+            .setPositiveButton("Clear") { _, _ -> logBuffer.setLength(0) }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun processInput(input: String) {
@@ -193,9 +219,11 @@ class MainActivity : AppCompatActivity() {
     private fun fetchPlaylistInfo(url: String) {
         val playlistId = extractPlaylistId(url)
         if (playlistId != null) {
+            logError("START", "Fetching playlist: $playlistId")
             // Priority: Try Piped API first (better support for Mixes/RD playlists)
             fetchPlaylistFromPiped(playlistId, url)
         } else {
+             logError("ERROR", "Invalid Playlist URL: $url")
              Toast.makeText(this, "Invalid Playlist URL", Toast.LENGTH_SHORT).show()
         }
     }
@@ -219,6 +247,7 @@ class MainActivity : AppCompatActivity() {
         client.newCall(request).enqueue(object : Callback {
              private fun retryPipedOrFallback(errorMsg: String) {
                 runOnUiThread {
+                    logError("PIPED_FAIL", "${pipedInstances[currentPipedIndex]} -> $errorMsg")
                     if (currentPipedIndex < pipedInstances.size - 1) {
                         currentPipedIndex++
                         fetchPlaylistFromPiped(playlistId, originalUrl)
@@ -227,10 +256,12 @@ class MainActivity : AppCompatActivity() {
                         if (playlistId.startsWith("RD")) {
                             loadingIndicator.visibility = View.GONE
                             currentPipedIndex = 0
+                            logError("PIPED_FINAL", "All Piped servers failed for Mix playlist.")
                             Toast.makeText(this@MainActivity, "Mix Failed: Servers Busy. Try again later.", Toast.LENGTH_LONG).show()
                         } else {
                             // Standard playlist, try Invidious fallback
                             currentPipedIndex = 0 // Reset
+                            logError("PIPED_FALLBACK", "Falling back to Invidious...")
                             fetchPlaylistFromInvidious(playlistId, originalUrl)
                         }
                     }
@@ -290,6 +321,7 @@ class MainActivity : AppCompatActivity() {
                             if (currentTrackIndex == -1) {
                                 playTrack(0)
                             }
+                            logError("PIPED_SUCCESS", "Loaded ${newTracks.size} tracks from ${pipedInstances[currentPipedIndex]}")
                             Toast.makeText(this@MainActivity, "Added ${newTracks.size} tracks from Piped", Toast.LENGTH_SHORT).show()
                         }
                     } else {
@@ -317,7 +349,8 @@ class MainActivity : AppCompatActivity() {
 
         client.newCall(request).enqueue(object : Callback {
             private fun retryOrShowError(errorMsg: String) {
-                runOnUiThread { 
+                runOnUiThread {
+                    logError("INVIDIOUS_FAIL", "${invidiousInstances[currentInstanceIndex]} -> $errorMsg")
                     if (currentInstanceIndex < invidiousInstances.size - 1) {
                         currentInstanceIndex++
                         fetchPlaylistFromInvidious(playlistId, originalUrl)
@@ -325,6 +358,7 @@ class MainActivity : AppCompatActivity() {
                         loadingIndicator.visibility = View.GONE
                         currentInstanceIndex = 0 // Reset
                         val finalError = if (errorMsg.length > 50) errorMsg.substring(0, 50) + "..." else errorMsg
+                        logError("INVIDIOUS_FINAL", "All Invidious servers failed.")
                         Toast.makeText(this@MainActivity, "Failed: $finalError", Toast.LENGTH_LONG).show() 
                     }
                 }
@@ -382,6 +416,7 @@ class MainActivity : AppCompatActivity() {
                             if (currentTrackIndex == -1) {
                                 playTrack(0)
                             }
+                            logError("INVIDIOUS_SUCCESS", "Loaded ${newTracks.size} tracks from ${invidiousInstances[currentInstanceIndex]}")
                             Toast.makeText(this@MainActivity, "Added ${newTracks.size} tracks from Invidious", Toast.LENGTH_SHORT).show()
                         }
                     } else if (data.has("error")) {
@@ -403,6 +438,7 @@ class MainActivity : AppCompatActivity() {
     private fun fetchYoutubeInfo(url: String) {
         val videoId = extractVideoId(url)
         if (videoId != null) {
+            logError("START", "Fetching video: $videoId")
             // Use the current instance or default to the first one
             val instance = invidiousInstances[currentInstanceIndex]
             val apiUrl = "$instance/api/v1/videos/$videoId"
