@@ -16,7 +16,6 @@ import androidx.media3.ui.PlayerView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import coil.load
-import coil.transform.BlurTransformation
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.gson.Gson
 import com.google.gson.JsonObject
@@ -190,9 +189,7 @@ class MainActivity : AppCompatActivity() {
         currentTrackIndex = index
         val track = playlist[index]
         
-        backgroundImage.load(track.thumbnailUrl) {
-            transformations(BlurTransformation(this@MainActivity, 25f))
-        }
+        backgroundImage.load(track.thumbnailUrl)
         playMedia(track.url)
     }
 
