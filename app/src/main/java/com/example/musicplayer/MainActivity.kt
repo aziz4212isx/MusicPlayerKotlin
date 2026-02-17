@@ -87,10 +87,11 @@ class MainActivity : AppCompatActivity() {
     private var currentTrackIndex = -1
     // Fallback Piped Instances (More reliable for Mixes)
     private val pipedInstances = listOf(
-        "https://api.piped.projectsegfau.lt",
-        "https://pipedapi.tokhmi.xyz",
-        "https://pipedapi.lunar.icu",
-        "https://pipedapi.kavin.rocks"
+        "https://api.piped.private.coffee",
+        "https://pipedapi-libre.kavin.rocks",
+        "https://pipedapi.kavin.rocks",
+        "https://pipedapi.leptons.xyz",
+        "https://pipedapi.nosebs.ru"
     )
     private var currentPipedIndex = 0
 
@@ -308,50 +309,68 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
+                val trimmedBody = responseBody.trim()
+                if (trimmedBody.startsWith("<")) {
+                    val contentType = response.header("content-type") ?: "unknown"
+                    val snippet = trimmedBody.take(200).replace("\n", " ").replace("\r", " ")
+                    logError("PIPED_HTML", "CT=$contentType Body=$snippet")
+                    retryPipedOrFallback("HTML Response")
+                    return
+                }
+
                 try {
                     val data = gson.fromJson(responseBody, JsonObject::class.java)
-                    if (data.has("relatedStreams")) {
-                        val videos = data.getAsJsonArray("relatedStreams")
-                        val newTracks = mutableListOf<Track>()
-                        
-                        videos.forEach { videoElement ->
-                            try {
-                                val video = videoElement.asJsonObject
-                                val title = video.get("title").asString
-                                val author = video.get("uploaderName").asString // Piped uses uploaderName
-                                // Piped provides relative URLs like /watch?v=...
-                                val videoUrl = video.get("url").asString
-                                val videoId = videoUrl.replace("/watch?v=", "")
-                                val thumb = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
-                                val watchUrl = "https://www.youtube.com/watch?v=$videoId"
-                                
-                                newTracks.add(Track(title, author, watchUrl, thumb))
-                            } catch (e: Exception) {
-                                // Ignore individual failures
-                            }
+                    val videos = when {
+                        data.has("relatedStreams") -> data.getAsJsonArray("relatedStreams")
+                        data.has("videos") -> data.getAsJsonArray("videos")
+                        else -> null
+                    }
+
+                    if (videos == null) {
+                        val contentType = response.header("content-type") ?: "unknown"
+                        val snippet = trimmedBody.take(200).replace("\n", " ").replace("\r", " ")
+                        logError("PIPED_INVALID", "CT=$contentType Body=$snippet")
+                        retryPipedOrFallback("Invalid Piped JSON")
+                        return
+                    }
+
+                    val newTracks = mutableListOf<Track>()
+                    videos.forEach { videoElement ->
+                        try {
+                            val video = videoElement.asJsonObject
+                            val title = video.get("title").asString
+                            val author = if (video.has("uploaderName")) video.get("uploaderName").asString else video.get("author").asString
+                            val videoUrl = if (video.has("url")) video.get("url").asString else "/watch?v=${video.get("videoId").asString}"
+                            val videoId = videoUrl.replace("/watch?v=", "")
+                            val thumb = "https://img.youtube.com/vi/$videoId/hqdefault.jpg"
+                            val watchUrl = "https://www.youtube.com/watch?v=$videoId"
+
+                            newTracks.add(Track(title, author, watchUrl, thumb))
+                        } catch (e: Exception) {
+                        }
+                    }
+
+                    runOnUiThread {
+                        loadingIndicator.visibility = View.GONE
+                        if (newTracks.isEmpty()) {
+                            retryPipedOrFallback("Empty Piped Playlist")
+                            return@runOnUiThread
                         }
 
-                        runOnUiThread {
-                            loadingIndicator.visibility = View.GONE
-                            if (newTracks.isEmpty()) {
-                                retryPipedOrFallback("Empty Piped Playlist")
-                                return@runOnUiThread
-                            }
-                            
-                            val startPos = playlist.size
-                            playlist.addAll(newTracks)
-                            adapter.notifyItemRangeInserted(startPos, newTracks.size)
-                            
-                            if (currentTrackIndex == -1) {
-                                playTrack(0)
-                            }
-                            logError("PIPED_SUCCESS", "Loaded ${newTracks.size} tracks from ${pipedInstances[currentPipedIndex]}")
-                            Toast.makeText(this@MainActivity, "Added ${newTracks.size} tracks from Piped", Toast.LENGTH_SHORT).show()
+                        val startPos = playlist.size
+                        playlist.addAll(newTracks)
+                        adapter.notifyItemRangeInserted(startPos, newTracks.size)
+
+                        if (currentTrackIndex == -1) {
+                            playTrack(0)
                         }
-                    } else {
-                        retryPipedOrFallback("Invalid Piped JSON")
+                        logError("PIPED_SUCCESS", "Loaded ${newTracks.size} tracks from ${pipedInstances[currentPipedIndex]}")
+                        Toast.makeText(this@MainActivity, "Added ${newTracks.size} tracks from Piped", Toast.LENGTH_SHORT).show()
                     }
                 } catch (e: Exception) {
+                    val contentType = response.header("content-type") ?: "unknown"
+                    val snippet = trimmedBody.take(200).replace("\n", " ").replace("\r", " ")
+                    logError("PIPED_PARSE", "CT=$contentType Body=$snippet")
                     retryPipedOrFallback("Piped Parse Error")
                 }
             }
